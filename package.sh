@@ -87,15 +87,3 @@ if [[ $? -ne 0 ]]; then
     exit 1
 fi
 echo "Packaging finished for Rotki ${ROTKEHLCHEN_VERSION}"
-
-# Now if in linux make the AppImage executable
-if [[ "$PLATFORM" == "linux" ]]; then
-    # Go back to root directory
-    cd ..
-    # Find the appImage, make it executable and remember its filename so
-    # travis can do the publishing
-    # They don't do it automatically. Long discussion here:
-    # https://github.com/electron-userland/electron-builder/issues/893
-    export GENERATED_APPIMAGE=$(ls electron-app/dist/*AppImage | head -n 1)
-    chmod +x $GENERATED_APPIMAGE
-fi

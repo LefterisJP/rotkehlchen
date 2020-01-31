@@ -36,9 +36,6 @@ module.exports = {
           target: ['AppImage', 'tar.xz'],
           icon: 'srs/assets/images/rotki_1024x1024.png',
           category: 'Finance'
-        },
-        appImage: {
-          publish: null
         }
       }
     }
