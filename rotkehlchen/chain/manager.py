@@ -25,9 +25,9 @@ from rotkehlchen.assets.asset import Asset, EthereumToken
 from rotkehlchen.chain.bitcoin import get_bitcoin_addresses_balances
 from rotkehlchen.chain.ethereum.aave import Aave
 from rotkehlchen.chain.ethereum.compound import Compound
-from rotkehlchen.chain.ethereum.uniswap import Uniswap
 from rotkehlchen.chain.ethereum.makerdao import MakerDAODSR, MakerDAOVaults
 from rotkehlchen.chain.ethereum.tokens import EthTokens
+from rotkehlchen.chain.ethereum.uniswap import Uniswap
 from rotkehlchen.chain.ethereum.yearn import YearnVaults
 from rotkehlchen.chain.ethereum.zerion import DefiProtocolBalances, Zerion
 from rotkehlchen.constants.assets import A_BTC, A_DAI, A_ETH
@@ -376,7 +376,7 @@ class ChainManager(CacheableObject, LockableQueryObject):
         module = self.eth_modules.get('uniswap', None)
         if not module:
             return None
-            
+
         return module  # type: ignore
 
     @property
