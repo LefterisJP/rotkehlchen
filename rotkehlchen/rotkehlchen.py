@@ -170,6 +170,30 @@ class Rotkehlchen():
         self.shutdown_event = gevent.event.Event()
         self.migration_manager = DataMigrationManager(self)
 
+    def kill_running_tx_query_tasks(
+            self,
+            accounts: ListOfBlockchainAddresses,
+    ) -> None:
+        """Checks for running greenlets related to transactions query and kills them."""
+        assert self.task_manager is not None, 'task manager should have been initialized at this point'  # noqa: E501
+        log.debug(
+            f'Attempting to kill running transaction queries tasks '
+            f'from api task greenlets {self.api_task_greenlets} and '
+            f'task manager running greenlets {self.task_manager.running_greenlets}',
+        )
+        for greenlet in self.api_task_greenlets:
+            if greenlet.args[0].__func__.__qualname__ == 'RestAPI._get_evm_transactions':
+                greenlet.kill()
+
+        set_accounts = set(accounts)
+        for fn, greenlets in self.task_manager.running_greenlets.items():
+            for greenlet in greenlets:
+                if (
+                    greenlet.kwargs.get('address', None) in set_accounts and
+                    fn.__qualname__ == 'EvmTransactions.single_address_query_transactions'
+                ):
+                    greenlet.kill()
+
     def reset_after_failed_account_creation_or_login(self) -> None:
         """If the account creation or login failed make sure that the rotki instance is clear
 
