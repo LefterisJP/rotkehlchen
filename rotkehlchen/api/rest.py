@@ -161,7 +161,6 @@ from rotkehlchen.rotkehlchen import Rotkehlchen
 from rotkehlchen.serialization.serialize import process_result, process_result_list
 from rotkehlchen.types import (
     AVAILABLE_MODULES_MAP,
-    EVM_CHAINS_WITH_TRANSACTIONS,
     SUPPORTED_BITCOIN_CHAINS,
     SUPPORTED_CHAIN_IDS,
     SUPPORTED_EVM_CHAINS,
@@ -2206,9 +2205,6 @@ class RestAPI():
         extra status code argument for errors
         """
         try:
-            if blockchain in EVM_CHAINS_WITH_TRANSACTIONS:
-                self.rotkehlchen.kill_running_tx_query_tasks(accounts)
-
             self.rotkehlchen.remove_single_blockchain_accounts(
                 blockchain=blockchain,
                 accounts=accounts,

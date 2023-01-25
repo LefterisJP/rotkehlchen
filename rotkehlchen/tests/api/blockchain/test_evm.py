@@ -19,8 +19,10 @@ from rotkehlchen.tests.utils.api import (
 )
 from rotkehlchen.tests.utils.avalanche import AVALANCHE_ACC1_AVAX_ADDR
 from rotkehlchen.tests.utils.blockchain import setup_filter_active_evm_addresses_mock
+from rotkehlchen.tests.utils.factories import make_evm_address
 from rotkehlchen.tests.utils.rotkehlchen import setup_balances
 from rotkehlchen.types import SupportedBlockchain
+from rotkehlchen.utils.misc import ts_now
 
 ADDY = string_to_evm_address('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045')
 
@@ -292,48 +294,82 @@ def test_add_multievm_accounts(rotkehlchen_api_server):
     ]
 
 
-@pytest.mark.parametrize('ethereum_accounts', [[ADDY]])
-def test_evm_account_deletion_does_not_wait_for_pending_txn_queries(rotkehlchen_api_server) -> None:  # noqa: E501
+@pytest.mark.parametrize('ethereum_accounts', [[make_evm_address() for _ in range(3)]])
+def test_evm_account_deletion_does_not_wait_for_pending_txn_queries(
+        rotkehlchen_api_server,
+        ethereum_accounts,
+) -> None:
     """
-    Test that if transactions for an address are being queried and removal is requested for that address,
-    the transactions querying greenlet is killed & the account is subsequently deleted.
-    """  # noqa: E501
-    # make an async query of all transactions.
-    def patch_get_evm_txns():
+    Test that if transactions for an address are being queried and removal is
+    requested for that address, the transactions querying greenlets are killed
+    and the account is subsequently deleted.
+    """
+    rotki = rotkehlchen_api_server.rest_api.rotkehlchen
+    task_manager = rotki.task_manager
+    gevent.killall(rotki.task_manager.greenlet_manager.greenlets)
+    task_manager.max_tasks_num = 2
+    now = ts_now()
+    task_manager.potential_tasks = [task_manager._maybe_query_evm_transactions]
+    for address in ethereum_accounts[:-1]:  # leave last address to run via task manager
+        task_manager.last_evm_tx_query_ts[(address, SupportedBlockchain.ETHEREUM)] = now
+    task_manager_addy = ethereum_accounts[-1]
+    api_addies = ethereum_accounts[:2].copy()
+
+    def patch_single_query(**kwargs):  # pylint: disable=unused-argument
         while True:
             gevent.sleep(2)
 
-    patch_obj = patch('rotkehlchen.db.evmtx.DBEvmTx.get_evm_transactions_and_limit_info', side_effect=patch_get_evm_txns)  # noqa: E501
+    patch_obj = patch('rotkehlchen.chain.evm.transactions.EvmTransactions._get_transactions_for_range', side_effect=patch_single_query)  # noqa: E501
     with patch_obj:
-        response = requests.post(
-            api_url_for(
-                rotkehlchen_api_server,
-                'evmtransactionsresource',
-            ), json={
-                'async_query': True,
-                'only_cache': False,
-                'limit': 1000,
-                'accounts': [{'address': ADDY, 'evm_chain': 'ethereum'}],
-                'evm_chain': 'ethereum',
-            },
-        )
-        assert_ok_async_response(response)
-        api_task_greenlets = rotkehlchen_api_server.rest_api.rotkehlchen.api_task_greenlets
-        assert len(api_task_greenlets) == 1  # the transactions fetching greenlet
-        assert not api_task_greenlets[0].dead
 
-    # now delete the address in sync -- and see that it does not take time.
+        # schedule last address query through task manager
+        task_manager.schedule()
+        assert len(task_manager.running_greenlets) == 1
+        greenlets = task_manager.running_greenlets[task_manager._maybe_query_evm_transactions]  # noqa: E501
+        assert len(greenlets) == 1
+        assert not greenlets[0].dead
+        # query first two addresses via the api
+        for idx, address in enumerate(api_addies):
+            response = requests.post(
+                api_url_for(
+                    rotkehlchen_api_server,
+                    'evmtransactionsresource',
+                ), json={
+                    'async_query': True,
+                    'only_cache': False,
+                    'limit': 1000,
+                    'accounts': [{'address': address, 'evm_chain': 'ethereum'}],
+                    'evm_chain': 'ethereum',
+                },
+            )
+            assert_ok_async_response(response)
+            api_task_greenlets = rotkehlchen_api_server.rest_api.rotkehlchen.api_task_greenlets
+            assert len(api_task_greenlets) == idx + 1  # the transactions fetching greenlets
+            assert not api_task_greenlets[idx].dead
+
+    # now delete one address from api task and 1 from periodic task manager and see it's immediate
     with gevent.Timeout(2):
-        response = requests.delete(
-            api_url_for(
-                rotkehlchen_api_server,
-                'blockchainsaccountsresource',
-                blockchain='eth',
-            ), json={
-                'async_query': False,
-                'accounts': [ADDY],
-            },
-        )
-        assert_proper_response(response)
-        assert len(api_task_greenlets) == 1
-        assert api_task_greenlets[0].dead
+        for address in (api_addies[0], task_manager_addy):
+            response = requests.delete(
+                api_url_for(
+                    rotkehlchen_api_server,
+                    'blockchainsaccountsresource',
+                    blockchain='eth',
+                ), json={
+                    'async_query': False,
+                    'accounts': [address],
+                },
+            )
+            assert_proper_response(response)
+
+    # Check that the 1 api greenlet and 1 task manager greenlet got killed
+    assert len(api_task_greenlets) == 2
+    assert api_task_greenlets[0].dead
+    assert len(task_manager.running_greenlets) == 1
+    assert task_manager.running_greenlets[task_manager._maybe_query_evm_transactions][0].dead  # noqa: E501
+    assert not api_task_greenlets[1].dead, 'The other address api greenlet should still run'
+
+    # retrieve ethereum accounts from the DB and see they are deleted
+    with rotki.data.db.conn.read_ctx() as cursor:
+        accounts = rotki.data.db.get_blockchain_accounts(cursor)
+        assert accounts.eth == [api_addies[1]]
