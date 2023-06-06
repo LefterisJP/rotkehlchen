@@ -20,14 +20,12 @@ defineProps({
       >
         <template #start>
           <date-display
-            no-timezone
             :timestamp="period.start"
             class="font-weight-medium"
           />
         </template>
         <template #end>
           <date-display
-            no-timezone
             :timestamp="period.end"
             class="font-weight-medium"
           />
