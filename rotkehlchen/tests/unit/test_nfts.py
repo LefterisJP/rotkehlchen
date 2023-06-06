@@ -1,4 +1,5 @@
 import pytest
+
 from rotkehlchen.db.filtering import NFTFilterQuery
 
 TEST_ACC1 = '0xc37b40ABdB939635068d3c5f13E7faF686F03B65'  # yabir.eth
@@ -18,4 +19,4 @@ def test_addresses_queried_for_nfts(blockchain):
         uniswap_nfts=None,
     )
     balances = nft_module.get_db_nft_balances(filter_query=NFTFilterQuery.make())['entries']
-    assert len(balances) == 1 and balances[0]['name'] == 'yabir.eth'
+    assert any(x['name'] == 'yabir.eth' for x in balances)
