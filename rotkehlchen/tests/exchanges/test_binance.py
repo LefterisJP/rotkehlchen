@@ -23,6 +23,7 @@ from rotkehlchen.errors.asset import UnknownAsset, UnsupportedAsset
 from rotkehlchen.errors.misc import RemoteError
 from rotkehlchen.exchanges.binance import (
     API_TIME_INTERVAL_CONSTRAINT_TS,
+    BINANCE_ASSETS_STARTING_WITH_LD,
     BINANCE_LAUNCH_TS,
     RETRY_AFTER_LIMIT,
     Binance,
@@ -166,10 +167,6 @@ def test_trade_from_binance(function_scope_binance):
         assert isinstance(our_trade.fee_currency, Asset)
 
 
-@pytest.mark.skipif(
-    'CI' in os.environ,
-    reason='https://twitter.com/LefterisJP/status/1598107187184037888',
-)
 def test_binance_assets_are_known(inquirer):  # pylint: disable=unused-argument
     unsupported_assets = set(UNSUPPORTED_BINANCE_ASSETS)
     common_items = unsupported_assets.intersection(set(WORLD_TO_BINANCE.values()))
@@ -177,9 +174,13 @@ def test_binance_assets_are_known(inquirer):  # pylint: disable=unused-argument
 
     exchange_data = requests.get('https://api3.binance.com/api/v3/exchangeInfo').json()
     binance_assets = set()
+    assets_starting_with_ld = set()
     for pair_symbol in exchange_data['symbols']:
-        binance_assets.add(pair_symbol['baseAsset'])
-        binance_assets.add(pair_symbol['quoteAsset'])
+        for atype in ('baseAsset', 'quoteAsset'):
+            symbol = pair_symbol[atype]
+            if symbol.startswith('LD'):
+                assets_starting_with_ld.add(symbol)
+            binance_assets.add(symbol)
 
     sorted_assets = sorted(binance_assets)
     for binance_asset in sorted_assets:
@@ -192,6 +193,8 @@ def test_binance_assets_are_known(inquirer):  # pylint: disable=unused-argument
                 f'Found unknown asset {e.identifier} with symbol {binance_asset} in binance. '
                 f'Support for it has to be added',
             ))
+
+    assert assets_starting_with_ld == set(BINANCE_ASSETS_STARTING_WITH_LD)
 
 
 def test_binance_query_balances_include_features(function_scope_binance: Binance):
