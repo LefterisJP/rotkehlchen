@@ -760,6 +760,35 @@ class EVMTransactionDecoder(ABC):
                 if rules_decoding_output.process_swaps:
                     process_swaps = True
 
+        if monerium_special_handling_event is True:
+            # When events that need special handling exist iterate over the decoded events and
+            # exchange the legacy assets by the v2 assets. Also delete v2 events to
+            # avoid duplications. In the case of this exception handling, v2 events exist only
+            # for the case of interacting with the v1 tokens since interacting
+            # with v2 doesn't emit v1 transfers.
+            new_events = []  # we create a new list to avoid remove operations and modifying while iterating  # noqa: E501
+            replacement_assets = self.exceptions_mappings.values()
+            potential_duplicates = set()
+            for event in events:
+                if (replacement := self.exceptions_mappings.get(event.asset.identifier)) is not None:  # noqa: E501
+                    if (event_key := (replacement, event.amount, event.maybe_get_direction())) in potential_duplicates:  # noqa: E501
+                        continue  # skip if duplicate
+
+                    event.asset = replacement  # otherwise change the asset
+                    potential_duplicates.add(event_key)  # and mark as potential duplicate
+
+                elif event.asset.identifier in replacement_assets:
+                    if (event.asset, event.amount, event.maybe_get_direction()) in potential_duplicates:  # noqa: E501
+                        continue  # skip the duplicated event
+                    # else add it as potential duplicate
+                    potential_duplicates.add((event.asset, event.amount, event.maybe_get_direction()))  # noqa: E501
+
+                new_events.append(event)
+
+            events = new_events
+
+        # should run after monerium special handling as in paraswap decoder, during post-decoding,
+        # the extra EURe event receive is seen as a receival
         events, maybe_modified = self.run_all_post_decoding_rules(
             transaction=transaction,
             decoded_events=events,
@@ -768,24 +797,6 @@ class EVMTransactionDecoder(ABC):
         )
         if maybe_modified:
             process_swaps = True  # a swap may have been created in post decoding
-
-        if monerium_special_handling_event is True:
-            # When events that need special handling exist iterate over the decoded events and
-            # exchange the legacy assets by the v2 assets. Also delete v2 events to
-            # avoid duplications. In the case of this exception handling, v2 events exist only
-            # for the case of interacting with the v1 tokens since interacting
-            # with v2 doesn't emit v1 transfers.
-            new_events = []  # we create a new list to avoid remove operations and modifying while iterating  # noqa: E501
-            replacements = self.exceptions_mappings.values()
-            for event in events:
-                if (replacement := self.exceptions_mappings.get(event.asset.identifier)) is not None:  # noqa: E501
-                    event.asset = replacement
-                elif event.asset.identifier in replacements:
-                    continue  # skip the duplicated event
-
-                new_events.append(event)
-
-            events = new_events
 
         if len(events) == 0 and (eth_event := self._get_eth_transfer_event(transaction)) is not None:  # noqa: E501
             events = [eth_event]
