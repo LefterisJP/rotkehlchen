@@ -1135,6 +1135,34 @@ class GlobalDBHandler:
             return result if result is None else result[0]
 
     @staticmethod
+    def get_token_names(
+            tokens: list[tuple[ChecksumEvmAddress, ChainID]],
+    ) -> dict[tuple[ChecksumEvmAddress, ChainID], str]:
+        """Batched version of get_token_name.
+
+        Returns a mapping of (address, chain_id) -> token name for the requested tokens that
+        exist in the global DB and have a name. Issues a single query for all addresses instead
+        of one per token.
+        """
+        if len(tokens) == 0:
+            return {}
+
+        addresses = list({address for address, _ in tokens})
+        names: dict[tuple[ChecksumEvmAddress, ChainID], str] = {}
+        with GlobalDBHandler().conn.read_ctx() as cursor:
+            cursor.execute(
+                f'SELECT evm_tokens.address, evm_tokens.chain, assets.name FROM evm_tokens '
+                f'INNER JOIN assets ON evm_tokens.identifier = assets.identifier '
+                f'WHERE evm_tokens.address IN ({",".join("?" * len(addresses))})',
+                addresses,
+            )
+            for address, chain, name in cursor:
+                if name is not None:
+                    names[address, ChainID.deserialize_from_db(chain)] = name
+
+        return names
+
+    @staticmethod
     def add_evm_token_data(write_cursor: DBCursor, entry: EvmToken) -> None:
         """Adds ethereum token specific information into the global DB
 

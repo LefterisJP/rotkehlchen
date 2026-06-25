@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -226,6 +227,56 @@ class DBAddressbook:
             result = read_cursor.fetchone()
 
         return None if result is None else result[0]
+
+    def get_addressbook_entry_names(
+            self,
+            book_type: AddressbookType,
+            chain_addresses: list[OptionalChainAddress],
+    ) -> dict[OptionalChainAddress, str]:
+        """Batched version of get_addressbook_entry_name.
+
+        For each requested (address, blockchain) pair returns the matching name, preferring an
+        entry stored for the exact blockchain over one stored for the address' whole ecosystem
+        (blockchain=NULL). Pairs without a name are absent from the returned mapping. Issues a
+        single query for all addresses instead of one per address.
+        """
+        if len(chain_addresses) == 0:
+            return {}
+
+        addresses = list({chain_address.address for chain_address in chain_addresses})
+        names_by_address: defaultdict[str, dict[str, str]] = defaultdict(dict)
+        with self.read_ctx(book_type) as read_cursor:
+            read_cursor.execute(
+                f'SELECT address, blockchain, name FROM address_book WHERE address IN '
+                f'({",".join("?" * len(addresses))})',
+                addresses,
+            )
+            for address, blockchain_str, name in read_cursor:
+                names_by_address[address][blockchain_str] = name
+
+        result: dict[OptionalChainAddress, str] = {}
+        for chain_address in chain_addresses:
+            if (blockchain_to_name := names_by_address.get(chain_address.address)) is None:
+                continue
+
+            try:
+                ecosystem_key = AddressbookEntry.get_ecosystem_key_by_address(
+                    address=chain_address.address,
+                )
+            except AddressNotSupported:
+                log.error(f'Address {chain_address.address} is from an unknown ecosystem. Skipping')  # noqa: E501
+                continue
+
+            # Mirror get_addressbook_entry_name: match the exact blockchain or the ecosystem-wide
+            # (blockchain=NULL) entry, preferring whichever sorts last by blockchain value (the
+            # `ORDER BY blockchain DESC` + fetchone() of the single-address query).
+            exact_key = chain_address.blockchain.value if chain_address.blockchain is not None else ecosystem_key  # noqa: E501
+            if len(candidates := [
+                key for key in (exact_key, ecosystem_key) if key in blockchain_to_name
+            ]) != 0:
+                result[chain_address] = blockchain_to_name[max(candidates)]
+
+        return result
 
     def maybe_make_entry_name_multichain(
             self,

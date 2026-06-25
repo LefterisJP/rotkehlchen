@@ -87,7 +87,9 @@ def get_fetchers_with_names(
     fetchers: dict[AddressNameSource, FetcherFunc] = {}
     for source_id, returned_name in fetchers_to_name.items():
         def make_fetcher(label: str | None) -> FetcherFunc:
-            return lambda db, chain_address: label
+            if label is None:
+                return lambda db, chain_addresses: {}
+            return lambda db, chain_addresses: dict.fromkeys(chain_addresses, label)
 
         fetchers[source_id] = make_fetcher(returned_name)
 

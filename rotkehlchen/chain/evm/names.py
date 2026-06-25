@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from rotkehlchen.chain.ethereum.decoding.constants import (
     KRAKEN_ADDRESSES,
@@ -19,7 +19,7 @@ from rotkehlchen.types import (
     AddressbookEntryWithSource,
     AddressbookType,
     AddressNameSource,
-    ChainAddress,
+    ChainID,
     ChecksumEvmAddress,
     EnsMapping,
     OptionalChainAddress,
@@ -130,7 +130,9 @@ def maybe_resolve_name(
     return resolved_address
 
 
-FetcherFunc = Callable[[DBHandler, OptionalChainAddress], str | None]
+# A fetcher resolves a single name source for many addresses at once, returning a mapping of
+# chain_address -> name for those addresses that have a name from that source.
+FetcherFunc = Callable[[DBHandler, list[OptionalChainAddress]], dict[OptionalChainAddress, str]]
 
 
 class NamePrioritizer:
@@ -138,12 +140,12 @@ class NamePrioritizer:
         self._fetchers: dict[AddressNameSource, FetcherFunc] = {}
         self._db = database
         self.add_fetchers({
-            'blockchain_account': _blockchain_address_to_name,
-            'global_addressbook': _global_addressbook_address_to_name,
-            'private_addressbook': _private_addressbook_address_to_name,
-            'ethereum_tokens': _token_mappings_address_to_name,
-            'hardcoded_mappings': _hardcoded_address_to_name,
-            'ens_names': _ens_address_to_name,
+            'blockchain_account': _blockchain_addresses_to_names,
+            'global_addressbook': _global_addressbook_addresses_to_names,
+            'private_addressbook': _private_addressbook_addresses_to_names,
+            'ethereum_tokens': _token_mappings_addresses_to_names,
+            'hardcoded_mappings': _hardcoded_addresses_to_names,
+            'ens_names': _ens_addresses_to_names,
         })
 
     def add_fetchers(self, fetchers: dict[AddressNameSource, FetcherFunc]) -> None:
@@ -157,117 +159,139 @@ class NamePrioritizer:
         """
         Gets the name from the name source with the highest priority.
         Name source ids with lower index have a higher priority.
+
+        Each source is resolved for all still-unnamed addresses in a single batch (instead of one
+        query per address per source) and prioritized in memory. Sources are tried in priority
+        order and an address drops out of the remaining set as soon as a name is found for it.
         """
-        top_prio_names = []
-
-        for chain_address in chain_addresses:
-            for name_source in prioritized_name_source:
-                fetcher = self._fetchers.get(name_source)
-                if not fetcher:
-                    raise NotImplementedError(
-                        f'address name fetcher for "{name_source}" is not implemented',
-                    )
-
-                name: str | None = fetcher(self._db, chain_address)
-                if name is None:
-                    continue
-                top_prio_names.append(AddressbookEntryWithSource(
-                    name=name,
-                    address=chain_address.address,
-                    blockchain=chain_address.blockchain,
-                    source=name_source,
-                ))
+        resolved: dict[OptionalChainAddress, tuple[str, AddressNameSource]] = {}
+        remaining = list(dict.fromkeys(chain_addresses))  # unique, order-preserving
+        for name_source in prioritized_name_source:
+            if len(remaining) == 0:
                 break
 
-        return top_prio_names
+            fetcher = self._fetchers.get(name_source)
+            if not fetcher:
+                raise NotImplementedError(
+                    f'address name fetcher for "{name_source}" is not implemented',
+                )
+
+            names = fetcher(self._db, remaining)
+            next_remaining = []
+            for chain_address in remaining:
+                if (name := names.get(chain_address)) is not None:
+                    resolved[chain_address] = name, name_source
+                else:
+                    next_remaining.append(chain_address)
+            remaining = next_remaining
+
+        return [
+            AddressbookEntryWithSource(
+                name=resolved[chain_address][0],
+                address=chain_address.address,
+                blockchain=chain_address.blockchain,
+                source=resolved[chain_address][1],
+            )
+            for chain_address in chain_addresses if chain_address in resolved
+        ]
 
 
-def _blockchain_address_to_name(
+def _blockchain_addresses_to_names(
         db: DBHandler,
-        chain_address: OptionalChainAddress,
-) -> str | None:
-    """Returns the label of an evm blockchain account with the given address or
-    None if there is no such account or the account has no label set or blockchain is
-    not specified.
+        chain_addresses: list[OptionalChainAddress],
+) -> dict[OptionalChainAddress, str]:
+    """Returns the labels of evm blockchain accounts (stored in the private addressbook).
+    Only pairs that specify a blockchain are considered.
     """
-    if chain_address.blockchain is None:
-        return None
+    if len(with_blockchain := [
+        chain_address for chain_address in chain_addresses if chain_address.blockchain is not None
+    ]) == 0:
+        return {}
 
-    chain_address = cast('ChainAddress', chain_address)
-    return DBAddressbook(db).get_addressbook_entry_name(AddressbookType.PRIVATE, chain_address)
-
-
-def _private_addressbook_address_to_name(
-        db: DBHandler,
-        chain_address: OptionalChainAddress,
-) -> str | None:
-    """Returns the name of a private addressbook entry with the given address or
-    None if there is no such entry or the entry has no name set.
-    """
-    db_addressbook = DBAddressbook(db)
-    return db_addressbook.get_addressbook_entry_name(
+    return DBAddressbook(db).get_addressbook_entry_names(
         book_type=AddressbookType.PRIVATE,
-        chain_address=chain_address,
+        chain_addresses=with_blockchain,
     )
 
 
-def _global_addressbook_address_to_name(
+def _private_addressbook_addresses_to_names(
         db: DBHandler,
-        chain_address: OptionalChainAddress,
-) -> str | None:
-    """Returns the name of a global addressbook entry with the given address or
-    None if there is no such entry or the entry has no name set.
-    """
-    db_addressbook = DBAddressbook(db)
-    return db_addressbook.get_addressbook_entry_name(
+        chain_addresses: list[OptionalChainAddress],
+) -> dict[OptionalChainAddress, str]:
+    """Returns the names of private addressbook entries for the given addresses."""
+    return DBAddressbook(db).get_addressbook_entry_names(
+        book_type=AddressbookType.PRIVATE,
+        chain_addresses=chain_addresses,
+    )
+
+
+def _global_addressbook_addresses_to_names(
+        db: DBHandler,
+        chain_addresses: list[OptionalChainAddress],
+) -> dict[OptionalChainAddress, str]:
+    """Returns the names of global addressbook entries for the given addresses."""
+    return DBAddressbook(db).get_addressbook_entry_names(
         book_type=AddressbookType.GLOBAL,
-        chain_address=chain_address,
+        chain_addresses=chain_addresses,
     )
 
 
-def _hardcoded_address_to_name(
+def _hardcoded_addresses_to_names(
         _: DBHandler,
-        chain_address: OptionalChainAddress,
-) -> str | None:
-    """Returns the name of a known address or None if there is no such address"""
-    if chain_address.blockchain != SupportedBlockchain.ETHEREUM:
-        return None
+        chain_addresses: list[OptionalChainAddress],
+) -> dict[OptionalChainAddress, str]:
+    """Returns the names of known hardcoded addresses (in-memory, no query)."""
+    names: dict[OptionalChainAddress, str] = {}
+    for chain_address in chain_addresses:
+        if chain_address.blockchain != SupportedBlockchain.ETHEREUM:
+            continue
 
-    if chain_address.address in KRAKEN_ADDRESSES:
-        return 'Kraken'
-    elif chain_address.address == POLONIEX_ADDRESS:
-        return 'Poloniex'
-    elif chain_address.address == UPHOLD_ADDRESS:
-        return 'Uphold.com'
+        if chain_address.address in KRAKEN_ADDRESSES:
+            names[chain_address] = 'Kraken'
+        elif chain_address.address == POLONIEX_ADDRESS:
+            names[chain_address] = 'Poloniex'
+        elif chain_address.address == UPHOLD_ADDRESS:
+            names[chain_address] = 'Uphold.com'
 
-    return None
+    return names
 
 
-def _token_mappings_address_to_name(
+def _token_mappings_addresses_to_names(
         _: DBHandler,
-        chain_address: OptionalChainAddress,
-) -> str | None:
-    """Returns the token name for a token address/chain id combination
-    in the global database or None if the address is no token address
-    """
-    if chain_address.blockchain is None or not chain_address.blockchain.is_evm():
-        return None
-    return GlobalDBHandler.get_token_name(address=chain_address.address, chain_id=chain_address.blockchain.to_chain_id())  # noqa: E501
+        chain_addresses: list[OptionalChainAddress],
+) -> dict[OptionalChainAddress, str]:
+    """Returns the token names for the evm token address/chain id combinations in the global DB."""
+    requested: dict[OptionalChainAddress, tuple[ChecksumEvmAddress, ChainID]] = {
+        chain_address: (chain_address.address, chain_address.blockchain.to_chain_id())
+        for chain_address in chain_addresses
+        if chain_address.blockchain is not None and chain_address.blockchain.is_evm()
+    }
+    if len(requested) == 0:
+        return {}
+
+    token_names = GlobalDBHandler.get_token_names(list(requested.values()))
+    return {
+        chain_address: name
+        for chain_address, token_key in requested.items()
+        if (name := token_names.get(token_key)) is not None
+    }
 
 
-def _ens_address_to_name(
+def _ens_addresses_to_names(
         db: DBHandler,
-        chain_address: OptionalChainAddress,
-) -> str | None:
-    """Returns the ens name for an address or None if the address doesn't have one"""
+        chain_addresses: list[OptionalChainAddress],
+) -> dict[OptionalChainAddress, str]:
+    """Returns the ens names for the given addresses, read from the local cache in one query."""
     db_ens = DBEns(db)
     with db.conn.read_ctx() as cursor:
-        db_reverse_ens = db_ens.get_reverse_ens(
+        reverse_ens = db_ens.get_reverse_ens(
             cursor=cursor,
-            addresses=[chain_address.address],
+            addresses=list({chain_address.address for chain_address in chain_addresses}),
         )
-        address_ens = db_reverse_ens.get(chain_address.address, None)
-        if isinstance(address_ens, EnsMapping):
-            return address_ens.name
 
-        return None
+    names: dict[OptionalChainAddress, str] = {}
+    for chain_address in chain_addresses:
+        if isinstance(address_ens := reverse_ens.get(chain_address.address), EnsMapping):
+            names[chain_address] = address_ens.name
+
+    return names
