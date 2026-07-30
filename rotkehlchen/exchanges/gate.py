@@ -644,7 +644,12 @@ class Gate(ExchangeInterface, ExchangeWithExtras, SignatureGeneratorMixin):
             end_ts: Timestamp,
             event_queue: HistoryEventQueue,
     ) -> Timestamp:
-        """Force requery Gate events into the explicit queue without recording range progress."""
+        """Force requery Gate events into the explicit queue without recording range progress.
+
+        The override exists to thread the queue through, since the base implementation would
+        drop it and lose the per-page persistence. force_refresh is passed for the contract
+        even though Gate has no query cursors to bypass and so ignores it today.
+        """
         _, actual_end_ts = self.query_online_history_events(
             start_ts=start_ts,
             end_ts=end_ts,

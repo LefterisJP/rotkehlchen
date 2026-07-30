@@ -74,7 +74,6 @@ from rotkehlchen.utils.misc import (
     combine_dicts,
     pairwise,
     timestamp_to_date,
-    ts_ms_to_sec,
     ts_now,
     ts_now_in_ms,
 )
@@ -755,7 +754,7 @@ class Kraken(ExchangeInterface, ExchangeWithExtras, SignatureGeneratorMixin):
             self,
             trade_events: list[HistoryEvent],
             adjustments: list[HistoryEvent],
-    ) -> tuple[list[SwapEvent | HistoryEvent], Timestamp]:
+    ) -> list[SwapEvent | HistoryEvent]:
         """Process history events converting them into SwapEvents.
         `trade_events` contains Trade, Receive, and Spend events.
         `adjustments` contains Adjustment events.
@@ -767,15 +766,12 @@ class Kraken(ExchangeInterface, ExchangeWithExtras, SignatureGeneratorMixin):
         Also in some rare occasions Kraken may forcibly adjust something for you.
         Example would be delisting of DAO token and forcible exchange to ETH.
 
-        Returns:
-        - The list of SwapEvents and any adjustment events that were not converted.
-        - The biggest timestamp of all the trades processed
+        Returns the list of SwapEvents and any adjustment events that were not converted.
 
         May raise:
         - RemoteError if the pairs couldn't be correctly queried
         """
         swap_events = []
-        max_ts = 0
         get_attr = operator.attrgetter('group_identifier')
         # Create a list of lists where each sublist has the events for the same group identifier
         grouped_events = [list(g) for k, g in itertools.groupby(sorted(trade_events, key=get_attr), get_attr)]  # noqa: E501
@@ -784,7 +780,6 @@ class Kraken(ExchangeInterface, ExchangeWithExtras, SignatureGeneratorMixin):
                 continue
 
             swap_events.extend(events)
-            max_ts = max(max_ts, ts_ms_to_sec(events[0].timestamp))
 
         adjustments.sort(key=lambda x: x.timestamp)
         # Collect the adjustments that aren't converted into SwapEvents in a new list instead of
@@ -832,7 +827,7 @@ class Kraken(ExchangeInterface, ExchangeWithExtras, SignatureGeneratorMixin):
                 f'Skipping reading them. {adjustments}',
             )
 
-        return swap_events + unconverted_adjustments, Timestamp(max_ts)
+        return swap_events + unconverted_adjustments
 
     def process_kraken_raw_events(
             self,
@@ -931,11 +926,10 @@ class Kraken(ExchangeInterface, ExchangeWithExtras, SignatureGeneratorMixin):
             else:
                 final_events.append(event)
 
-        swap_events, _ = self.process_kraken_trades(
+        final_events.extend(self.process_kraken_trades(
             trade_events=trade_events,
             adjustments=adjustment_events,
-        )
-        final_events.extend(swap_events)
+        ))
         return final_events, start_ts if with_errors else end_ts
 
     def query_online_history_events_into_queue(

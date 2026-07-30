@@ -257,8 +257,11 @@ class Coinex(ExchangeInterface, SignatureGeneratorMixin):
         """Get CoinEx spot markets keyed by market name.
 
         Cached on the instance since the full market list is large and
-        needs thousands of asset resolutions to deserialize. An empty result
-        (remote error) is not cached so it gets retried on the next query.
+        needs thousands of asset resolutions to deserialize. Nothing is cached when
+        the query fails, so it gets retried on the next query.
+
+        May raise:
+        - RemoteError if the markets couldn't be queried
         """
         if len(self.markets) == 0:
             self.markets = {market.market: market for market in self._query_markets()}

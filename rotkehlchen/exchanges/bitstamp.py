@@ -477,6 +477,12 @@ class Bitstamp(ExchangeInterface, SignatureGeneratorMixin):
             end_ts: Timestamp,
             force_refresh: bool = False,
     ) -> tuple[Sequence[HistoryBaseEntry], Timestamp]:
+        """Query asset movements and trades and return them for the caller to save.
+
+        NB: history syncing goes through the query_online_history_events_into_queue()
+        variants below. Only this path writes the crypto transactions offset in a
+        transaction of its own, so any change to it needs to cover both.
+        """
         events = self._query_asset_movements(
             start_ts=start_ts,
             end_ts=end_ts,

@@ -388,6 +388,11 @@ class ExchangeManager:
         May raise:
         - RemoteError if one or more exchange queries fail
         - InputError if the specified exchange's query input is invalid
+
+        NB: only a single named instance propagates InputError. When querying every instance
+        of a location an InputError is aggregated into the RemoteError below like any other
+        failure, so that one misconfigured instance can't skip the rest. That turns it into a
+        502 instead of a 409 at the API layer, which is the accepted cost of not aborting.
         """
         with self.database.conn.read_ctx() as cursor:
             excluded = self.database.get_settings(cursor).non_syncing_exchanges

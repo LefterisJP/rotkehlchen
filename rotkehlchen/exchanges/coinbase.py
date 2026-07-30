@@ -1050,6 +1050,12 @@ class Coinbase(ExchangeInterface):
             end_ts: Timestamp,
             force_refresh: bool = False,
     ) -> tuple[Sequence[HistoryBaseEntry], Timestamp]:
+        """Query all transactions and return them for the caller to save.
+
+        NB: history syncing goes through the query_online_history_events_into_queue()
+        variants below. Only this path writes the account cursors in a transaction of
+        their own, so any change to the cursor handling needs to cover both.
+        """
         events = self._query_transactions(force_refresh=force_refresh)
         return events, end_ts
 
